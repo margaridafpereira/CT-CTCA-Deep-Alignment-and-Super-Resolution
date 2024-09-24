@@ -1,0 +1,71 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Jun  5 16:14:40 2024
+
+@author: MargaridaP
+"""
+
+import torch
+import torchvision
+import torchvision.transforms as transforms
+import numpy as np
+import os
+import gc
+
+inception_model = torchvision.models.inception_v3(pretrained=True, transform_input=False)
+inception_model = inception_model.double()  
+inception_model.eval()
+
+
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    transforms.Resize((299, 299)),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+real_images_path = 'F:/MargaridaP/Target'
+generated_images_path = 'D:/MargaridaP/pericardial_segmentation/data/results/FinalUNet_MSELoss_lr10-4/MargaridaP_test'
+
+def load_images_batch(folder, start, batch_size):
+    filenames = os.listdir(folder)[start:start + batch_size]
+    images = []
+    for filename in filenames:
+        img = np.load(os.path.join(folder, filename))
+        if img is not None:
+            img = np.repeat(img[..., np.newaxis], 3, axis=-1)  # Convert to RGB
+            img = transform(img)  # Apply transformations
+            img = img.double()  # Convert to Double type
+            images.append(img)
+    return torch.stack(images)
+
+def calculate_inception_score(images, inception_model):
+    with torch.no_grad():
+        scores = []
+        for img in images:
+            img = img.unsqueeze(0)  
+            img = img.double()  
+            output = inception_model(img)
+            output = torch.nn.functional.softmax(output, dim=1)
+            scores.append(output.numpy())
+        scores = np.concatenate(scores, axis=0)
+        kl_div = scores * np.log(scores / np.expand_dims(np.mean(scores, axis=0), axis=0))
+        return np.exp(np.mean(np.sum(kl_div, axis=1)))
+
+batch_size = 100
+
+real_is_scores = []
+generated_is_scores = []
+for i in range(0, len(os.listdir(real_images_path)), batch_size):
+    real_images_batch = load_images_batch(real_images_path, i, batch_size)
+    generated_images_batch = load_images_batch(generated_images_path, i, batch_size)
+    real_is = calculate_inception_score(real_images_batch, inception_model)
+    generated_is = calculate_inception_score(generated_images_batch, inception_model)
+    real_is_scores.append(real_is)
+    generated_is_scores.append(generated_is)
+    gc.collect()  
+
+real_is_avg = np.mean(real_is_scores)
+generated_is_avg = np.mean(generated_is_scores)
+
+print(f'Average Inception Score (Real Images): {real_is_avg:.4f}')
+print(f'Average Inception Score (Generated Images): {generated_is_avg:.4f}')
