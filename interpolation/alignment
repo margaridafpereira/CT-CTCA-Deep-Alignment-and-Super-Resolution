@@ -1,0 +1,122 @@
+import nrrd
+import numpy as np
+from scipy import interpolate
+import matplotlib.pyplot as plt
+import os
+
+def get_space_meshgrid(header):
+    xv, yv, zv = np.meshgrid(np.linspace(0, header['sizes'][0] - 1, header['sizes'][0]),
+                              np.linspace(0, header['sizes'][1] - 1, header['sizes'][1]),
+                              np.linspace(0, header['sizes'][2] - 1, header['sizes'][2]))
+
+    xyz_coord = np.concatenate((xv.flatten()[None, :], yv.flatten()[None, :], zv.flatten()[None, :]), axis=0)
+    xyz_space = np.matmul(header['space directions'], xyz_coord)
+    xyz_space[0, :] += header['space origin'][0]
+    xyz_space[1, :] += header['space origin'][1]
+    xyz_space[2, :] += header['space origin'][2]
+
+    return xyz_space
+
+def matching_CTandCTCA_slices(ct_path, ctca_path):
+    # Load CT and CTCA
+    data_ct, header_ct = nrrd.read(ct_path)
+    data_ctca, header_ctca = nrrd.read(ctca_path)
+
+    xyz_space_ct = get_space_meshgrid(header_ct)
+    xyz_space_ctca = get_space_meshgrid(header_ctca)
+
+    z_ct = np.mean(np.reshape(xyz_space_ct[2, :], header_ct['sizes']), axis=(0, 1))
+    z_ctca = np.mean(np.reshape(xyz_space_ctca[2, :], header_ctca['sizes']), axis=(0, 1))
+    
+    #Region in CT that corresponds to the z region of CTCA
+    region_indices = np.where(
+        (z_ct >= np.min(z_ctca)) & (z_ct <= np.max(z_ctca))
+    )[0]
+
+    return region_indices
+
+def interpolate_CTCAnew(ct_path, z_ind_ct, ctca_path):
+    # Load CT
+    data_ct, header_ct = nrrd.read(ct_path)
+    xyz_space_ct = get_space_meshgrid(header_ct)
+            
+    num_slices = header_ct['sizes'][2]
+        
+    #para todas as slices
+    for z_ind_ct in range(num_slices):
+        
+        z_slice = np.mean(np.reshape(xyz_space_ct[2, :], header_ct['sizes'])[:, :, z_ind_ct])
+
+        # Load CTCA
+        data_ctca, header_ctca = nrrd.read(ctca_path)
+        xyz_space_ctca = get_space_meshgrid(header_ctca)
+    
+        # Get CTCA axial slice closest to the picked CT axial slice
+        z_ctca = np.mean(np.mean(np.reshape(xyz_space_ctca[2, :], header_ctca['sizes']), axis=0), axis=0)
+        z_ind_ctca = np.argmin(np.abs(z_ctca - z_slice))
+        
+    #SÓ SLICE DO MEIO
+    # # Get middle axial slice index (but could be any slice)
+    # z_ind_ct = header_ct['sizes'][2] // 2
+    # z_slice = np.mean(np.reshape(xyz_space_ct[2, :], header_ct['sizes'])[:, :, z_ind_ct])
+
+    # # Load CTCA
+    # data_ctca, header_ctca = nrrd.read(ctca_path)
+    # xyz_space_ctca = get_space_meshgrid(header_ctca)
+
+    # # Get CTCA axial slice closest to picked CT axial slice
+    # z_ctca = np.mean(np.mean(np.reshape(xyz_space_ctca[2, :], header_ctca['sizes']), axis=0), axis=0)
+    # z_ind_ctca = np.argmin(np.abs(z_ctca - z_slice))
+
+        # Find spatial boundaries of CT
+        xmin = min(np.reshape(xyz_space_ct[0, :], header_ct['sizes'])[0, :, z_ind_ct])
+        ymin = min(np.reshape(xyz_space_ct[1, :], header_ct['sizes'])[:, 0, z_ind_ct])
+        xmax = max(np.reshape(xyz_space_ct[0, :], header_ct['sizes'])[0, :, z_ind_ct])
+        ymax = max(np.reshape(xyz_space_ct[1, :], header_ct['sizes'])[:, 0, z_ind_ct])
+        
+        # Define space for interpolation
+        x_new = np.linspace(xmin, xmax, 512)
+        y_new = np.linspace(ymin, ymax, 512)
+    
+        # Make interpolation function
+        f_ctca = interpolate.RectBivariateSpline(
+            np.reshape(xyz_space_ctca[0, :], header_ctca['sizes'])[0, :, z_ind_ctca],
+            np.reshape(xyz_space_ctca[1, :], header_ctca['sizes'])[:, 0, z_ind_ctca],
+            data_ctca[:, :, z_ind_ctca])
+    
+        # Interpolate the new image
+        ctca_new = f_ctca(x_new, y_new)
+    
+        out_of_bounds_mask_x = (x_new < xyz_space_ctca[0, 0]) | (x_new > xyz_space_ctca[0, -1])
+        out_of_bounds_mask_y = (y_new < xyz_space_ctca[1, 0]) | (y_new > xyz_space_ctca[1, -1])
+
+        # ctca_new[out_of_bounds_mask_x,:] = np.min(ctca_new) #None
+        # ctca_new[:,out_of_bounds_mask_y]=np.min(ctca_new) #None
+        
+        ctca_new[out_of_bounds_mask_x,:] = np.nan
+        ctca_new[:,out_of_bounds_mask_y]= np.nan
+        
+        # #PLOTS
+        # plt.figure(figsize=(8, 8))
+        # plt.subplot(1, 3, 1)
+        # plt.imshow(data_ct[:, :, z_ind_ct], cmap='gray')
+        # plt.title("CT")
+        # plt.axis('off')
+        
+        # plt.subplot(1, 3, 2)
+        # plt.imshow(data_ctca[:, :, z_ind_ctca], cmap='gray')
+        # plt.title("CTCA")
+        # plt.axis('off')
+            
+        # # Plot the interpolated slice of the CTCA
+        # plt.subplot(1, 3, 3)
+        # plt.imshow(ctca_new, cmap='gray')
+        # plt.title("CTCA new")
+        # plt.axis('off')
+            
+        # plt.tight_layout()
+        # plt.show()
+        
+        #ctca_new_filename = os.path.join(output_path, f'ctca_new{z_ind_ctca}.png')
+        
+        return data_ct[:, :, z_ind_ct], ctca_new
